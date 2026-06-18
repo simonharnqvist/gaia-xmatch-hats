@@ -1,208 +1,270 @@
 from pathlib import Path
 import lsdb
 import pandas as pd
+import pyarrow.parquet as pq
 from dagster import asset_check, AssetCheckResult
 
-SAMPLE_SIZE = 20
-
-
-def hats_root(context) -> Path:
-    return Path(
-        context.resources.paths.ztf_hats_dir
-    ).resolve()
-
-
-def load_partition_info(root: Path) -> pd.DataFrame:
-    return pd.read_csv(
-        root / "partition_info.csv",
-        sep=None,
-        engine="python",
-    )
-
-
-def sample_partitions(root: Path) -> pd.DataFrame:
-    df = load_partition_info(root)
-
-    return df.sample(
-        min(SAMPLE_SIZE, len(df)),
-        random_state=42,
-    )
-
-
-def partition_path(root: Path, row) -> Path:
-    return (
-        root
-        / "dataset"
-        / f"Norder={int(row.Norder)}"
-        / f"Dir={int(row.Dir)}"
-        / f"Npix={int(row.Npix)}.parquet"
-    )
-
-@asset_check(
-    asset="ztf_hats",
-    required_resource_keys={"paths"},
+from gaia_xmatch_hats import (
+    get_root,
+    load_partition_info,
+    sample_partitions,
+    partition_path,
+    check_metadata_files,
+    check_partition_info,
+    check_partitions_exist,
+    check_rowcounts
 )
-def metadata_files_exist(context):
 
-    root = hats_root(context)
 
-    required = [
-        "hats.properties",
-        "partition_info.csv",
-        "schema.txt",
-        "linecounts.txt",
-        "md5sums.txt",
-    ]
+################
+# Gaia HATS
+################
 
-    missing = [
-        f
-        for f in required
-        if not (root / f).exists()
-    ]
+@asset_check(asset="gaia_hats", required_resource_keys={"paths"})
+def gaia_metadata_files_exist(context):
+    root = get_root(context, "gaia")
+    missing = check_metadata_files(root)
 
     return AssetCheckResult(
         passed=not missing,
-        metadata={
-            "archive_root": str(root),
-            "missing_files": missing,
-        },
+        metadata={"missing_files": missing},
     )
 
 
-@asset_check(
-    asset="ztf_hats",
-    required_resource_keys={"paths"},
-)
-def partition_info_valid(context):
+@asset_check(asset="gaia_hats", required_resource_keys={"paths"})
+def gaia_lsdb_open_check(context):
+    root = get_root(context, "gaia")
 
-    root = hats_root(context)
-
-    df = load_partition_info(root)
-
-    duplicate_count = (
-        df.duplicated(["Norder", "Npix"]).sum()
-    )
-
-    invalid_rows = (
-        df["num_rows"] <= 0
-    ).sum()
-
-    invalid_dirs = (
-        df["Dir"]
-        != (df["Npix"] // 10000) * 10000
-    ).sum()
-
-    failures = []
-
-    if duplicate_count:
-        failures.append(
-            f"{duplicate_count} duplicate partitions"
-        )
-
-    if invalid_rows:
-        failures.append(
-            f"{invalid_rows} empty partitions"
-        )
-
-    if invalid_dirs:
-        failures.append(
-            f"{invalid_dirs} invalid Dir values"
+    try:
+        ddf = lsdb.open_catalog(path=root, columns=["ra", "dec"])
+        passed = {"ra", "dec"}.issubset(set(ddf.columns))
+    except Exception as e:
+        return AssetCheckResult(
+            passed=False,
+            metadata={"error": str(e)},
         )
 
     return AssetCheckResult(
-        passed=not failures,
-        metadata={
-            "partitions": len(df),
-            "total_rows": int(df["num_rows"].sum()),
-            "issues": failures,
-        },
+        passed=passed,
+        metadata={"columns": list(ddf.columns)},
     )
 
-@asset_check(
-    asset="ztf_hats",
-    required_resource_keys={"paths"},
-)
-def sampled_partitions_exist(context):
 
-    root = hats_root(context)
+################
+# ZTF
+################
 
-    missing = []
-
-    for _, row in sample_partitions(root).iterrows():
-
-        path = partition_path(root, row)
-
-        if not path.exists():
-            missing.append(str(path))
+@asset_check(asset="ztf_hats", required_resource_keys={"paths"})
+def ztf_metadata_files_exist(context):
+    root = get_root(context, "ztf")
+    missing = check_metadata_files(root)
 
     return AssetCheckResult(
         passed=not missing,
-        metadata={
-            "sample_size": SAMPLE_SIZE,
-            "missing": missing[:20],
-        },
+        metadata={"missing_files": missing},
     )
 
-@asset_check(
-    asset="ztf_hats",
-    required_resource_keys={"paths"},
-)
-def sampled_partition_rowcounts(context):
 
-    root = hats_root(context)
+@asset_check(asset="ztf_hats", required_resource_keys={"paths"})
+def ztf_partition_info_valid(context):
+    root = get_root(context, "ztf")
+    df = load_partition_info(root)
 
-    mismatches = []
+    issues = check_partition_info(df)
 
-    for _, row in sample_partitions(root).iterrows():
+    return AssetCheckResult(
+        passed=not issues,
+        metadata={"issues": issues},
+    )
 
-        path = partition_path(root, row)
 
-        if not path.exists():
-            continue
+@asset_check(asset="ztf_hats", required_resource_keys={"paths"})
+def ztf_sampled_partitions_exist(context):
+    root = get_root(context, "ztf")
+    df = load_partition_info(root)
+    sample_df = sample_partitions(df)
 
-        actual = (
-            pq.ParquetFile(path)
-            .metadata
-            .num_rows
-        )
+    missing = check_partitions_exist(root, sample_df)
 
-        expected = int(row.num_rows)
+    return AssetCheckResult(
+        passed=not missing,
+        metadata={"missing": missing[:20]},
+    )
 
-        if actual != expected:
 
-            mismatches.append(
-                (
-                    f"Norder={row.Norder}, "
-                    f"Npix={row.Npix}: "
-                    f"{actual} != {expected}"
-                )
-            )
+@asset_check(asset="ztf_hats", required_resource_keys={"paths"})
+def ztf_sampled_rowcounts(context):
+    root = get_root(context, "ztf")
+    df = load_partition_info(root)
+    sample_df = sample_partitions(df)
+
+    mismatches = check_rowcounts(root, sample_df)
 
     return AssetCheckResult(
         passed=not mismatches,
+        metadata={"mismatches": mismatches[:20]},
+    )
+
+
+################
+# PS1
+################
+
+@asset_check(asset="ps1_hats", required_resource_keys={"paths"})
+def ps1_metadata_files_exist(context):
+    root = get_root(context, "ps1")
+    missing = check_metadata_files(root)
+
+    return AssetCheckResult(
+        passed=not missing,
+        metadata={"missing_files": missing},
+    )
+
+
+@asset_check(asset="ps1_hats", required_resource_keys={"paths"})
+def ps1_partition_info_valid(context):
+    root = get_root(context, "ps1")
+    df = load_partition_info(root)
+
+    issues = check_partition_info(df)
+
+    return AssetCheckResult(
+        passed=not issues,
+        metadata={"issues": issues},
+    )
+
+
+@asset_check(asset="ps1_hats", required_resource_keys={"paths"})
+def ps1_sampled_partitions_exist(context):
+    root = get_root(context, "ps1")
+    df = load_partition_info(root)
+    sample_df = sample_partitions(df)
+
+    missing = check_partitions_exist(root, sample_df)
+
+    return AssetCheckResult(
+        passed=not missing,
+        metadata={"missing": missing[:20]},
+    )
+
+
+@asset_check(asset="ps1_hats", required_resource_keys={"paths"})
+def ps1_sampled_rowcounts(context):
+    root = get_root(context, "ps1")
+    df = load_partition_info(root)
+    sample_df = sample_partitions(df)
+
+    mismatches = check_rowcounts(root, sample_df)
+
+    return AssetCheckResult(
+        passed=not mismatches,
+        metadata={"mismatches": mismatches[:20]},
+    )
+
+
+#######################
+# Gaia X ZTF crossmatch
+#######################
+
+@asset_check(asset="gaia_ztf_xmatched", required_resource_keys={"paths"})
+def gaia_ztf_xmatch_loadable(context):
+    root = get_xmatch_root(context, "gaia_ztf")
+
+    ok, info = check_lsdb_open(root)
+
+    return AssetCheckResult(
+        passed=ok,
+        metadata={"columns_or_error": str(info)},
+    )
+
+
+@asset_check(asset="gaia_ztf_xmatched", required_resource_keys={"paths"})
+def gaia_ztf_xmatch_schema(context):
+    root = get_xmatch_root(context, "gaia_ztf")
+
+    ok, cols = check_lsdb_open(root)
+
+    required = {"ra", "dec"}
+    missing = check_required_columns(cols, required) if ok else ["failed_open"]
+
+    return AssetCheckResult(
+        passed=not missing,
         metadata={
-            "sample_size": SAMPLE_SIZE,
-            "mismatches": mismatches[:20],
+            "columns": list(cols) if ok else None,
+            "missing": missing,
         },
     )
 
-@asset_check(asset = "gaia_hats")
-def check_lsdb_can_open_gaia_hats(context) -> AssetCheckResult:
 
-    gaia_hats_path = Path(context.resources.paths.gaia_hats_dir).join("gaia_hats")
+@asset_check(asset="gaia_ztf_xmatched", required_resource_keys={"paths"})
+def gaia_ztf_xmatch_rowcount(context):
+    root = get_xmatch_root(context, "gaia_ztf")
 
-    ddf = lsdb.open_catalog(path=gaia_hats_path, columns=["ra", "dec"])
-    passed = (list(ddf.columns) == ['ra', 'dec'])
+    try:
+        cat = lsdb.open_catalog(path=root)
+        n_rows = len(cat)
 
-    return AssetCheckResult(passed = passed, metadata={"ddf.columns": ddf.columns})
+        return AssetCheckResult(
+            passed=n_rows > 0,
+            metadata={"n_rows": int(n_rows)},
+        )
+
+    except Exception as e:
+        return AssetCheckResult(
+            passed=False,
+            metadata={"error": str(e)},
+        )
 
 
-# @asset_check(asset = gaia_ztf_xmatched)
-# def check_lsdb_can_open_gaia_ztf_xmatched(context) -> AssetCheckResult:
+#######################
+# Gaia X PS1 crossmatch
+#######################
 
-#     ddf = lsdb.open_catalog(path=context.resources.paths.xmatched_hats_dir, columns=["ra", "dec"])
-#     passed = (list(ddf.columns) == ['ra', 'dec'])
+@asset_check(asset="gaia_ps1_xmatched", required_resource_keys={"paths"})
+def gaia_ps1_xmatch_loadable(context):
+    root = get_xmatch_root(context, "gaia_ps1")
 
-#     return AssetCheckResult(passed = passed, metadata={"ddf.columns": ddf.columns})
+    ok, info = check_lsdb_open(root)
+
+    return AssetCheckResult(
+        passed=ok,
+        metadata={"columns_or_error": str(info)},
+    )
 
 
+@asset_check(asset="gaia_ps1_xmatched", required_resource_keys={"paths"})
+def gaia_ps1_xmatch_schema(context):
+    root = get_xmatch_root(context, "gaia_ps1")
+
+    ok, cols = check_lsdb_open(root)
+
+    required = {"ra", "dec"}
+    missing = check_required_columns(cols, required) if ok else ["failed_open"]
+
+    return AssetCheckResult(
+        passed=not missing,
+        metadata={
+            "columns": list(cols) if ok else None,
+            "missing": missing,
+        },
+    )
+
+
+@asset_check(asset="gaia_ps1_xmatched", required_resource_keys={"paths"})
+def gaia_ps1_xmatch_rowcount(context):
+    root = get_xmatch_root(context, "gaia_ps1")
+
+    try:
+        cat = lsdb.open_catalog(path=root)
+        n_rows = len(cat)
+
+        return AssetCheckResult(
+            passed=n_rows > 0,
+            metadata={"n_rows": int(n_rows)},
+        )
+
+    except Exception as e:
+        return AssetCheckResult(
+            passed=False,
+            metadata={"error": str(e)},
+        )

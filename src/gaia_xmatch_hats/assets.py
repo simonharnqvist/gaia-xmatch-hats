@@ -5,6 +5,8 @@ from gaia_xmatch_hats.crossmatch import crossmatch_with_gaia
 from pathlib import Path
 import subprocess
 
+LOGGER_CONFIG = {"loggers": {"console": {"config": {"log_level": "INFO"}}}}
+
 
 @asset(required_resource_keys={"dask_client", "paths"}, deps="ztf_hats")
 def gaia_hats(context):

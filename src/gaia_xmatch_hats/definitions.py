@@ -14,4 +14,5 @@ defs = dg.Definitions(
         "paths": resources.CatalogPathsResource.configure_at_launch(),
         "dask_client": resources.DaskClientResource.configure_at_launch(),
     },
+    loggers={"console": dg.json_console_logger}
 )
