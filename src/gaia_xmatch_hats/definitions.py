@@ -1,10 +1,17 @@
-from gaia_xmatch_hats.assets import gaia_hats, gaia_ztf_xmatched
-from gaia_xmatch_hats.resources import DaskClientResource, CatalogPathsResource
+import dagster as dg
 
-defs = Definitions(
-    assets=[gaia_hats, gaia_ztf_xmatched],
+from gaia_xmatch_hats import assets, checks, resources
+
+
+all_assets = dg.load_assets_from_modules([assets])
+all_checks = dg.load_asset_checks_from_modules([checks])
+
+
+defs = dg.Definitions(
+    assets=all_assets,
+    asset_checks=all_checks,
     resources={
-        "dask_client": DaskClientResource.configure_at_launch(),
-        "paths": CatalogPathsResource.configure_at_launch()
+        "paths": resources.CatalogPathsResource.configure_at_launch(),
+        "dask_client": resources.DaskClientResource.configure_at_launch(),
     },
 )
