@@ -6,7 +6,9 @@ dependencies = [
     "dagster==1.13.7",
     "lsdb",
     "hats-import",
-    "awscli"
+    "awscli",
+    "boto3",
+    "ipykernel"
 ]
 
 [dependency-groups]

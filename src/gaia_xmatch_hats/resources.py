@@ -7,8 +7,9 @@ class CatalogPathsResource(dg.ConfigurableResource):
     gaia_hats_artifact_name: str
     ztf_hats_dir: str
     ztf_hats_artifact_name: str
-    xmatched_hats_dir: str
-
+    gaia_ztf_xmatched_dir: str
+    ps1_hats_url: str
+    ps1_hats_dir: str
 
 class DaskClientResource(dg.ConfigurableResource):
     n_workers: int = 4

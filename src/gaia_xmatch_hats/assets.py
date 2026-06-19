@@ -2,6 +2,7 @@ from dagster import asset
 from hats_import.catalog.file_readers import ParquetPyarrowReader
 from hats_import.pipeline import ImportArguments, pipeline_with_client
 from gaia_xmatch_hats.crossmatch import crossmatch_with_gaia
+from gaia_xmatch_hats.extract_s3 import download_s3
 from pathlib import Path
 import subprocess
 
@@ -38,15 +39,12 @@ def ztf_hats(context):
     ztf_hats_dir = Path(context.resources.paths.ztf_hats_dir).resolve()
     ztf_hats_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        "aws", "s3", "cp",
-        "--recursive",
-        "--no-sign-request",
-        "s3://ipac-irsa-ztf/ztf/enhanced/dr24/lc/hats/",
-        str(ztf_hats_dir),
-    ]
+    bucket = "ipac-irsa-ztf"
+    prefix = "ztf/enhanced/dr24/lc/hats/"
 
-    subprocess.run(cmd, check=True)
+    max_workers = (context.resources.dask_client.n_workers * context.resources.dask_client.threads_per_worker)
+
+    download_s3(bucket = bucket, prefix = prefix, outdir = ztf_hats_dir, max_workers = max_workers)
 
 
 @asset(required_resource_keys={"dask_client", "paths"}, deps=["gaia_hats"])

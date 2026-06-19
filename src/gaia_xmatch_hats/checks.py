@@ -4,7 +4,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 from dagster import asset_check, AssetCheckResult
 
-from gaia_xmatch_hats import (
+from gaia_xmatch_hats.check_helpers import (
     get_root,
     load_partition_info,
     sample_partitions,
