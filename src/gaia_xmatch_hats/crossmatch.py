@@ -19,10 +19,10 @@ def crossmatch_with_gaia(gaia_hats: str, other_hats: str,
             other_catalog,
             radius_arcsec=1.0,
             n_neighbors=1,
-            suffixes=("_gaia", f"_{other_catalog_name}"),
+            suffixes=("_gaia", f"_{other_catalog_name}")
         )
 
         if not isinstance(xmatched, lsdb.Catalog):
             raise TypeError("Output is not of type lsdb.Catalog")
 
-        lsdb.io.to_hats(catalog = xmatched, base_catalog_path=xmatch_dir)
+        xmatched.write_catalog(base_catalog_path=xmatch_dir, resume=True)
